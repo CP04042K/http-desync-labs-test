@@ -1,5 +1,8 @@
 const net = require('net');
 
+// NOTE: Code bang nodejs rat kho vi CRLF "\r\n" no tinh la 2 bytes
+// NOTE: Chua smuggling duoc do ham readBytes(), do van de ben tren
+// NOTE: phai xem cach cai lib axios no code the nao
 class TCPSocket {
     constructor(mode) {
         if (mode === 'server') {
@@ -37,13 +40,14 @@ class TCPSocket {
             var data = rawData.toString();
             var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
             var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
-    
+
             headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
-    
+
             var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
-    
-            if (stream) return thisObj.handleRawData(stream); // if more than one request then parse the next one
+            console.log(Array.from(stream))
+            if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
+            console.log(error);
             return; // request is malformed or just no request at all 
         }
         
@@ -87,7 +91,7 @@ class TCPSocket {
     }
 
     readBytes(stream, byteToRead) {
-        return {result: stream.substr(0, byteToRead), left: stream(substr(byteToRead))}
+        return {result: stream.substr(0, byteToRead), left: stream.substr(byteToRead)}
     }
 
     headersToHeaderObj(headers) {
