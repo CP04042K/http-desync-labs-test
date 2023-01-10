@@ -17,7 +17,7 @@ class TCPSocket {
     receivedHTTP(connection, thisObj) {
         const remoteAddress = connection.remoteAddress + ':' + connection.remotePort;  
         console.log('new client connection from %s', remoteAddress);
-        connection.on('data', (rawData) => thisObj.handleRawData(rawData, thisObj));  
+        connection.on('data', (rawData) => thisObj.handleRawData(connection, rawData, thisObj));  
     }
 
     readUntil(stream, char) {
@@ -32,22 +32,27 @@ class TCPSocket {
         return {result, left: stream};
     }
 
-    handleRawData(rawData, thisObj) {
-        var data = rawData.toString();
-        var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
-        var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
-
-        headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
-
-        var stream = thisObj.handleHTTPRequest(reqLine, headers, data, thisObj);
-
-        if (stream) return thisObj.handleRawData(stream); // if more than one request then parse the next one
+    handleRawData(connection, rawData, thisObj) {
+        try {
+            var data = rawData.toString();
+            var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
+            var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+    
+            headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+    
+            var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
+    
+            if (stream) return thisObj.handleRawData(stream); // if more than one request then parse the next one
+        } catch (error) {
+            return; // request is malformed or just no request at all 
+        }
+        
 
         // console.log('connection data from %s: %j', remoteAddress, rawData.toString());  
         // connection.write(rawData);  
     }
 
-    handleHTTPRequest(reqLine, headers, stream, thisObj) {
+    handleHTTPRequest(connection, reqLine, headers, stream, thisObj) {
         if (/^(GET|POST)\x20\/([a-z0-9A-Z]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
 
             const httpMethod = reqLine.match(/^(\w+)/i)[0];
