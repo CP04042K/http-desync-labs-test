@@ -44,7 +44,7 @@ class TCPSocket {
             headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
 
             var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
-            console.log(Array.from(stream))
+
             if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
             console.log(error);
@@ -123,7 +123,7 @@ class TCPSocket {
         Object.entries(responseHeaders).forEach(([headerName, headerValue]) => 
             finalResponse += `${headerName}: ${headerValue}\r\n`
         );
-        finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
+        finalResponse += `Content-Length: ${this.getActualLength(responseBody)}\r\n\r\n`;
 
         finalResponse += responseBody;
         connection.write(finalResponse);
@@ -138,6 +138,10 @@ class TCPSocket {
             "400": "Bad request",
             "503": "Internal server error"
         }[httpCode.toString()]
+    }
+
+    getActualLength(rawStr) {
+        return rawStr.replace(/\r\n/, " ").length;
     }
 
 }
