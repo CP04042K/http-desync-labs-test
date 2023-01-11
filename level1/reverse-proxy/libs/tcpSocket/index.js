@@ -1,12 +1,31 @@
 const net = require('net');
 
-// NOTE: Code bang nodejs rat kho vi CRLF "\r\n" no tinh la 2 bytes
+const backend = require('../backend');
+const { getRandomId } = require('./utils.js');
+
+const backendServer = new backend("127.0.0.1", 8081);
+
 class TCPSocket {
     constructor(mode) {
+        backendServer.setCallback(() => {
+            this.isBackendConnected = true;
+        })
+
+        this.backendConnection = backendServer.getConnection();
+        this.isBackendConnected = false;
+
+        this.backendConnection.on("data", (rawData) => this.handleRawData(rawData, this, null, true));
+
+        this.connections = {};
         if (mode === 'server') {
             this.server = net.createServer();
-            this.server.on('connection', (connection) => this.receivedHTTP(connection, this));
+            this.server.on('connection', (connection) => {
+                const randomUUID = getRandomId();
+                this.connections[randomUUID] = connection;
+                this.receivedConnection(this, randomUUID)
+            });
         }
+
         this.error = null;
         this.httpVersion = null;
     }
@@ -15,16 +34,17 @@ class TCPSocket {
         return this.server.listen(port);
     }
 
-    receivedHTTP(connection, thisObj) {
-        const remoteAddress = connection.remoteAddress + ':' + connection.remotePort;  
+    receivedConnection(thisObj, randomUUID) {
+        const remoteAddress = this.connections[randomUUID].remoteAddress + ':' + this.connections[randomUUID].remotePort;  
         console.log('new client connection from %s', remoteAddress);
-        connection.on('data', (rawData) => thisObj.handleRawData(connection, rawData, thisObj));  
+        this.connections[randomUUID].on('data', (rawData) => thisObj.handleRawData(rawData, thisObj, randomUUID));  
     }
 
     readUntil(stream, char) {
         var result = "";
         while(stream.length) {
             if (stream.substr(0, char.length) === char) {
+                stream = stream.substr(char.length);
                 return {result, left: stream};
             }
             result += stream.substr(0,1); 
@@ -33,17 +53,28 @@ class TCPSocket {
         return {result, left: stream};
     }
 
-    handleRawData(connection, rawData, thisObj) {
+    handleRawData(rawData, thisObj, randomUUID = null, isFromBackend = false) {
         try {
             var data = rawData.toString();
-            var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
-            var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
 
-            headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+            if (isFromBackend) {
+                const originalData = data;
 
-            var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
-            console.log(stream)
-            if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
+                var {result, left: data} = thisObj.readUntil(data, "\r\n");
+                var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+                headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+
+                this.connections[headers["X-Requested-UUID"]].write(originalData);
+            } else {
+                var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
+                var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+
+                headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+
+                var stream = thisObj.handleHTTPRequest(reqLine, headers, data, thisObj, randomUUID);
+            }
+            
+            // if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
             console.log(error);
             return; // request is malformed or just no request at all 
@@ -54,11 +85,11 @@ class TCPSocket {
         // connection.write(rawData);  
     }
 
-    handleHTTPRequest(connection, reqLine, headers, stream, thisObj) {
-        if (/^(GET|POST)\x20\/([a-z0-9A-Z]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
+    handleHTTPRequest(reqLine, headers, stream, thisObj, randomUUID) {
+        if (/^(GET|POST)\x20\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
 
             const httpMethod = reqLine.match(/^(\w+)/i)[0];
-            const resource = reqLine.match(/\/([0-9a-zA-Z\?#=]+)?/i)[0]; // filter here
+            const resource = reqLine.match(/\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20/i)[0]; // filter here
             thisObj.httpVersion = reqLine.match(/HTTP\/1\.(1|0)$/i)[0].replace(/http\//i, "");
 
             if (thisObj.httpVersion !== "1.1") {
@@ -70,15 +101,7 @@ class TCPSocket {
 
             // do some filter in query string and body, then forward the request to backend-server
 
-            thisObj.giveRespond(
-                connection, 
-                {
-                    httpCode: 200,
-                    httpVersion: thisObj.httpVersion
-                }, 
-                {}, 
-                "alooo\r\n"
-            );
+            thisObj.forwardToBackend(reqLine, headers, body, randomUUID);
 
             return stream;
 
@@ -102,7 +125,7 @@ class TCPSocket {
         return headerObj;
     } 
 
-    giveRespond(connection, options = {}, headers = {}, body = "") {
+    giveRespond(options = {}, headers = {}, body = "", randomUUID) {
         // init 3 parts of response
         var responseStatusLine = "";
         var responseHeaders = {...headers};
@@ -124,7 +147,44 @@ class TCPSocket {
         finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
 
         finalResponse += responseBody;
-        connection.write(finalResponse);
+        this.connections[randomUUID].write(finalResponse);
+
+    }
+
+    forwardToBackend(reqLine, headers = {}, body = "", randomUUID) {
+        if (!this.isBackendConnected) {
+            this.giveRespond(
+                {
+                    httpCode: 503,
+                    httpVersion: this.httpVersion
+                },
+                {"X-Requested-UUID": randomUUID},
+                "Can't connect to the backend server\r\n",
+                randomUUID
+            )
+        }
+
+        var request = "";
+
+        request += reqLine + "\r\n";
+
+        Object.entries(
+            {
+                ...headers, 
+                "X-Forwarded-For": this.connections[randomUUID].remoteAddress,
+                "X-Requested-UUID": randomUUID
+            }
+        )
+            .forEach(([headerName, headerValue]) => 
+                request += `${headerName}: ${headerValue}\r\n`
+            );
+
+        if (!("Content-Length" in headers || "Transfer-Encoding" in headers)) 
+            request += `Content-Length: ${body.length}\r\n`;
+        
+        request += "\r\n" + body;
+
+        this.backendConnection.write(request);
 
     }
 

@@ -1,95 +1,162 @@
 const net = require('net');
+const RequestPool = require('../requestPool');
 
 class TCPSocket {
     constructor(mode) {
         if (mode === 'server') {
             this.server = net.createServer();
-            this.server.on('connection', (connection) => this.receivedHTTP(connection, this));
+            this.connection = null;
+            this.server.on('connection', (connection) => this.receivedConnection(connection, this));
         }
+        this.requestPool = new RequestPool();
         this.error = null;
         this.httpVersion = null;
+
+        const handleLoop = setInterval(() => {
+            console.log(this.requestPool.pool);
+            if (!this.requestPool.isPoolEmpty()) this.handleRawData();
+        }, 1000);
     }
 
     listen(port = 9000) {
         return this.server.listen(port);
     }
 
-    receivedHTTP(connection, thisObj) {
+    receivedConnection(connection, thisObj) {
         const remoteAddress = connection.remoteAddress + ':' + connection.remotePort;  
         console.log('new client connection from %s', remoteAddress);
-        connection.on('data', (rawData) => thisObj.handleRawData(connection, rawData, thisObj));  
+        this.connection = connection;
+        connection.on('data', (rawData) => thisObj.requestPool.addToPool(rawData.toString())); 
     }
 
-    readUntil(stream, char) {
-        var result = "";
-        while(stream.length) {
-            if (stream.substr(0, char.length) === char) {
-                stream = stream.substr(char.length);
-                return {result, left: stream};
-            }
-            result += stream.substr(0,1); 
-            stream = stream.substr(1);
-        }
-        return {result, left: stream};
-    }
-
-    handleRawData(connection, rawData, thisObj) {
+    handleRawData() {
         try {
-            var data = rawData.toString();
-            var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
-            var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+            var reqLine = this.requestPool.readUntil("\r\n");
+            var headers = this.requestPool.readUntil("\r\n\r\n");
 
-            headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+            headers = this.headersToHeaderObj(headers.trim().split("\r\n"));
 
-            var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
+            this.handleHTTPRequest(reqLine, headers);
 
             // if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
             console.log(error);
             return; // request is malformed or just no request at all 
         }
-        
 
         // console.log('connection data from %s: %j', remoteAddress, rawData.toString());  
         // connection.write(rawData);  
     }
 
-    handleHTTPRequest(connection, reqLine, headers, stream, thisObj) {
-        if (/^(GET|POST)\x20\/([a-z0-9A-Z]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
+    handleHTTPRequest(reqLine, headers) {
+        if (/^(GET|POST)\x20\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
 
             const httpMethod = reqLine.match(/^(\w+)/i)[0];
-            const resource = reqLine.match(/\/([0-9a-zA-Z\?#=]+)?/i)[0]; // filter here
-            thisObj.httpVersion = reqLine.match(/HTTP\/1\.(1|0)$/i)[0].replace(/http\//i, "");
+            const resource = reqLine.match(/\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20/i)[0]; // filter here
+            this.httpVersion = reqLine.match(/HTTP\/1\.(1|0)$/i)[0].replace(/http\//i, "");
 
-            if (thisObj.httpVersion !== "1.1") {
-                thisObj.error = "We only support http 1.1";
+            if (this.httpVersion !== "1.1") {
+                this.error = "We only support http 1.1";
             }
 
-            if (headers["Content-Length"]) 
-                var {result: body, left: stream} = thisObj.readBytes(stream, headers["Content-Length"]);
+            if (httpMethod.toUpperCase() === "POST") {
+                if ("Transfer-Encoding" in headers && headers["Transfer-Encoding"].trim() === "chunked") {
 
+                const data = this.requestPool.readUntil("\r\n\r\n")
+                const parsedFromChunks = this.parseChunkedRequest(data);
+
+                return this.giveRespond( 
+                    {
+                        httpCode: 200,
+                        httpVersion: this.httpVersion
+                    }, 
+                    {
+                        "X-Requested-UUID": headers["X-Requested-UUID"]
+                    }, 
+
+                    `
+                    Your method was: ${httpMethod}\r\n
+                    Your requested resource was: ${resource}
+                    Your request data was: \r\n\r\n${parsedFromChunks}\r\n
+                    This was parsed from chunks
+                    `
+                );
+
+                } else if (headers["Content-Length"]) {
+                    var body = this.requestPool.readBytes(headers["Content-Length"]);
+
+                    return this.giveRespond( 
+                        {
+                            httpCode: 200,
+                            httpVersion: this.httpVersion
+                        }, 
+                        {
+                            "X-Requested-UUID": headers["X-Requested-UUID"]
+                        }, 
+
+                        `
+                        Your method was: ${httpMethod}\r\n
+                        Your requested resource was: ${resource}
+                        Your request data was: \r\n\r\n${body}
+                        `
+                    );
+                } else {
+                    return this.giveRespond( 
+                        {
+                            httpCode: 400,
+                            httpVersion: this.httpVersion
+                        }, 
+                        {
+                            "X-Requested-UUID": headers["X-Requested-UUID"]
+                        }, 
+                        "Can't parse request"
+                    );
+                }
+            } else {
+                return this.giveRespond( 
+                    {
+                        httpCode: 200,
+                        httpVersion: this.httpVersion
+                    }, 
+                    {
+                        "X-Requested-UUID": headers["X-Requested-UUID"]
+                    }, 
+
+                    `
+                    Your method was: ${httpMethod}\r\n
+                    Your requested resource was: ${resource}
+                    `
+                ); 
+            }
+
+            
             // do some filter in query string and body, then forward the request to backend-server
 
-            thisObj.giveRespond(
-                connection, 
-                {
-                    httpCode: 200,
-                    httpVersion: thisObj.httpVersion
-                }, 
-                {}, 
-                body
-            );
-
-            return stream;
+            // this.giveRespond( 
+            //     {
+            //         httpCode: 200,
+            //         httpVersion: this.httpVersion
+            //     }, 
+            //     {}, 
+            //     body
+            // );
 
         } else {
-            thisObj.error = "Unexpected error";
+            this.giveRespond( 
+                {
+                    httpCode: 200,
+                    httpVersion: this.httpVersion
+                }, 
+                {}, 
+                "Error parsing HTTP request\r\n"
+            );
         }
-        return stream;
     }
 
-    readBytes(stream, byteToRead) {
-        return {result: stream.substr(0, byteToRead), left: stream.substr(byteToRead)}
+    parseChunkedRequest(chunkedData) {
+        const chunkedArr = chunkedData.split("\r\n");
+        // do something here
+        return chunkedArr.join("\r\n");
     }
 
     headersToHeaderObj(headers) {
@@ -102,7 +169,7 @@ class TCPSocket {
         return headerObj;
     } 
 
-    giveRespond(connection, options = {}, headers = {}, body = "") {
+    giveRespond(options = {}, headers = {}, body = "") {
         // init 3 parts of response
         var responseStatusLine = "";
         var responseHeaders = {...headers};
@@ -124,7 +191,8 @@ class TCPSocket {
         finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
 
         finalResponse += responseBody;
-        connection.write(finalResponse);
+        console.log(finalResponse); 
+        this.connection.write(finalResponse);
 
     }
 
