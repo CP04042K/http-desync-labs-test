@@ -1,8 +1,6 @@
 const net = require('net');
 
 // NOTE: Code bang nodejs rat kho vi CRLF "\r\n" no tinh la 2 bytes
-// NOTE: Chua smuggling duoc do ham readBytes(), do van de ben tren
-// NOTE: phai xem cach cai lib axios no code the nao
 class TCPSocket {
     constructor(mode) {
         if (mode === 'server') {
@@ -44,7 +42,7 @@ class TCPSocket {
             headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
 
             var stream = thisObj.handleHTTPRequest(connection, reqLine, headers, data, thisObj);
-
+            console.log(stream)
             if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
             console.log(error);
@@ -91,17 +89,7 @@ class TCPSocket {
     }
 
     readBytes(stream, byteToRead) {
-        var goal = byteToRead;
-        var result = "";
-        while (goal) {
-            var temp = stream.substr(0,1);
-            result += temp;
-            stream = stream.substr(1);
-            if (temp === "\r") 
-                continue;
-            --goal;
-        }
-        return {result, left: stream}
+        return {result: stream.substr(0, byteToRead), left: stream.substr(byteToRead)}
     }
 
     headersToHeaderObj(headers) {
@@ -133,7 +121,7 @@ class TCPSocket {
         Object.entries(responseHeaders).forEach(([headerName, headerValue]) => 
             finalResponse += `${headerName}: ${headerValue}\r\n`
         );
-        finalResponse += `Content-Length: ${this.getActualLength(responseBody)}\r\n\r\n`;
+        finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
 
         finalResponse += responseBody;
         connection.write(finalResponse);
@@ -148,10 +136,6 @@ class TCPSocket {
             "400": "Bad request",
             "503": "Internal server error"
         }[httpCode.toString()]
-    }
-
-    getActualLength(rawStr) {
-        return rawStr.replace(/\r\n/, " ").length;
     }
 
 }
