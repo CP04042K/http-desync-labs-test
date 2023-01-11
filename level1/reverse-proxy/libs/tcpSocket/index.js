@@ -91,7 +91,17 @@ class TCPSocket {
     }
 
     readBytes(stream, byteToRead) {
-        return {result: stream.substr(0, byteToRead), left: stream.substr(byteToRead)}
+        var goal = byteToRead;
+        var result = "";
+        while (goal) {
+            var temp = stream.substr(0,1);
+            result += temp;
+            stream = stream.substr(1);
+            if (temp === "\r") 
+                continue;
+            --goal;
+        }
+        return {result, left: stream}
     }
 
     headersToHeaderObj(headers) {
