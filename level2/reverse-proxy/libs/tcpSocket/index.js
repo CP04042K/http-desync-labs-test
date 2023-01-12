@@ -1,0 +1,215 @@
+const net = require('net');
+
+const backend = require('../backend');
+const { getRandomId } = require('./utils.js');
+
+const backendServer = new backend("127.0.0.1", 8081);
+
+class TCPSocket {
+    constructor(mode) {
+        backendServer.setCallback(() => {
+            this.isBackendConnected = true;
+        })
+
+        this.backendConnection = backendServer.getConnection();
+        this.isBackendConnected = false;
+
+        this.backendConnection.on("data", (rawData) => this.handleRawData(rawData, this, null, true));
+
+        this.connections = {};
+        if (mode === 'server') {
+            this.server = net.createServer();
+            this.server.on('connection', (connection) => {
+                const randomUUID = getRandomId();
+                this.connections[randomUUID] = connection;
+                this.receivedConnection(this, randomUUID)
+            });
+        }
+
+        this.error = null;
+        this.httpVersion = null;
+    }
+
+    listen(port = 9000) {
+        return this.server.listen(port);
+    }
+
+    receivedConnection(thisObj, randomUUID) {
+        const remoteAddress = this.connections[randomUUID].remoteAddress + ':' + this.connections[randomUUID].remotePort;  
+        console.log('new client connection from %s', remoteAddress);
+        this.connections[randomUUID].on('data', (rawData) => thisObj.handleRawData(rawData, thisObj, randomUUID));  
+    }
+
+    readUntil(stream, char) {
+        var result = "";
+        while(stream.length) {
+            if (stream.substr(0, char.length) === char) {
+                stream = stream.substr(char.length);
+                return {result, left: stream};
+            }
+            result += stream.substr(0,1); 
+            stream = stream.substr(1);
+        }
+        return {result, left: stream};
+    }
+
+    handleRawData(rawData, thisObj, randomUUID = null, isFromBackend = false) {
+        try {
+            var data = rawData.toString();
+
+            if (isFromBackend) {
+                const originalData = data;
+
+                var {result, left: data} = thisObj.readUntil(data, "\r\n");
+                var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+                headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+
+                this.connections[headers["X-Requested-UUID"]].write(originalData);
+            } else {
+                var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
+                var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
+
+                headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
+
+                var stream = thisObj.handleHTTPRequest(reqLine, headers, data, thisObj, randomUUID);
+            }
+            
+            // if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
+        } catch (error) {
+            console.log(error);
+            return; // request is malformed or just no request at all 
+        }
+        
+
+        // console.log('connection data from %s: %j', remoteAddress, rawData.toString());  
+        // connection.write(rawData);  
+    }
+
+    handleHTTPRequest(reqLine, headers, stream, thisObj, randomUUID) {
+        if (/^(GET|POST)\x20\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
+
+            const httpMethod = reqLine.match(/^(\w+)/i)[0];
+            const resource = reqLine.match(/\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20/i)[0]; // filter here
+            thisObj.httpVersion = reqLine.match(/HTTP\/1\.(1|0)$/i)[0].replace(/http\//i, "");
+
+            if (thisObj.httpVersion !== "1.1") {
+                thisObj.error = "We only support http 1.1";
+            }
+
+            if (resource.includes("admin") && this.connections[randomUUID].remoteAddress !== "127.0.0.1") {
+                return this.giveRespond(
+                    {
+                        httpCode: 403,
+                        httpVersion: this.httpVersion
+                    },
+                    {"X-Requested-UUID": randomUUID},
+                    "This is restricted area, can only be accessed from localhost\r\n",
+                    randomUUID
+                );
+            }
+
+            if (headers["Content-Length"]) 
+                var {result: body, left: stream} = thisObj.readBytes(stream, headers["Content-Length"]);
+
+            // do some filter in query string and body, then forward the request to backend-server
+
+            thisObj.forwardToBackend(reqLine, headers, body, randomUUID);
+
+            return stream;
+
+        } else {
+            thisObj.error = "Unexpected error";
+        }
+        return stream;
+    }
+
+    readBytes(stream, byteToRead) {
+        return {result: stream.substr(0, byteToRead), left: stream.substr(byteToRead)}
+    }
+
+    headersToHeaderObj(headers) {
+        const headerObj = {};
+
+        headers.forEach(header => {
+            const [key, value] = header.split(":");
+            headerObj[key.trim()] = value.trim(); // doing some NORMALIZATION here, notice!
+        });
+        return headerObj;
+    } 
+
+    giveRespond(options = {}, headers = {}, body = "", randomUUID) {
+        // init 3 parts of response
+        var responseStatusLine = "";
+        var responseHeaders = {...headers};
+        var responseBody = body;
+        // create status line
+        responseStatusLine += "HTTP/" + options.httpVersion + " ";
+        responseStatusLine += options.httpCode + " ";
+        responseStatusLine += this.getResponseMessage(options.httpCode);
+        // create some essential headers
+        responseHeaders["Date"] = new Date().toUTCString();
+        responseHeaders["Content-Type"] = "text/html";
+        // create respond's message
+        
+        var finalResponse = responseStatusLine + "\r\n";
+
+        Object.entries(responseHeaders).forEach(([headerName, headerValue]) => 
+            finalResponse += `${headerName}: ${headerValue}\r\n`
+        );
+        finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
+
+        finalResponse += responseBody;
+        this.connections[randomUUID].write(finalResponse);
+
+    }
+
+    forwardToBackend(reqLine, headers = {}, body = "", randomUUID) {
+        if (!this.isBackendConnected) {
+            this.giveRespond(
+                {
+                    httpCode: 503,
+                    httpVersion: this.httpVersion
+                },
+                {"X-Requested-UUID": randomUUID},
+                "Can't connect to the backend server\r\n",
+                randomUUID
+            );
+        }
+
+        var request = "";
+
+        request += reqLine + "\r\n";
+
+        Object.entries(
+            {
+                ...headers, 
+                "X-Forwarded-For": this.connections[randomUUID].remoteAddress,
+                "X-Requested-UUID": randomUUID
+            }
+        )
+            .forEach(([headerName, headerValue]) => 
+                request += `${headerName}: ${headerValue}\r\n`
+            );
+
+        if (!("Content-Length" in headers || "Transfer-Encoding" in headers)) 
+            request += `Content-Length: ${body.length}\r\n`;
+        
+        request += "\r\n" + body;
+
+        this.backendConnection.write(request);
+
+    }
+
+    getResponseMessage(httpCode) {
+        return {
+            "200": "OK",
+            "404": "Not found",
+            "403": "Forbiden",
+            "400": "Bad request",
+            "503": "Internal server error"
+        }[httpCode.toString()]
+    }
+
+}
+
+module.exports = TCPSocket;

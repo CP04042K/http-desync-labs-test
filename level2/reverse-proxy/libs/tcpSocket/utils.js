@@ -1,0 +1,1 @@
+module.exports.getRandomId = () => Buffer.from(require('crypto').randomBytes(16)).toString('hex');
