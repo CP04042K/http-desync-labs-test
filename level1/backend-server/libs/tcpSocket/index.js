@@ -2,18 +2,15 @@ const net = require('net');
 const RequestPool = require('../requestPool');
 
 class TCPSocket {
-    constructor(mode) {
-        if (mode === 'server') {
-            this.server = net.createServer();
-            this.connection = null;
-            this.server.on('connection', (connection) => this.receivedConnection(connection, this));
-        }
-        this.requestPool = new RequestPool();
+    constructor() {
+        this.server = net.createServer();
+        this.connection = null;
         this.error = null;
         this.httpVersion = null;
+        this.server.on('connection', (connection) => this.receivedConnection(connection, this));
+        this.requestPool = new RequestPool();
 
         const handleLoop = setInterval(() => {
-            // console.log(this.requestPool.pool);
             if (!this.requestPool.isPoolEmpty()) this.handleRawData();
         }, 2000);
     }
@@ -38,14 +35,9 @@ class TCPSocket {
 
             this.handleHTTPRequest(reqLine, headers);
 
-            // if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
-            console.log(error);
             return; // request is malformed or just no request at all 
         }
-
-        // console.log('connection data from %s: %j', remoteAddress, rawData.toString());  
-        // connection.write(rawData);  
     }
 
     handleHTTPRequest(reqLine, headers) {
@@ -58,7 +50,6 @@ class TCPSocket {
             if (this.httpVersion !== "1.1") {
                 this.error = "We only support http 1.1";
             }
-
 
             if (httpMethod.toUpperCase() === "POST") {
                 if ("Transfer-Encoding" in headers && headers["Transfer-Encoding"].trim() === "chunked") {
@@ -185,18 +176,6 @@ class TCPSocket {
                     `
                 ); 
             }
-
-            
-            // do some filter in query string and body, then forward the request to backend-server
-
-            // this.giveRespond( 
-            //     {
-            //         httpCode: 200,
-            //         httpVersion: this.httpVersion
-            //     }, 
-            //     {}, 
-            //     body
-            // );
 
         } else {
             this.giveRespond( 

@@ -1,5 +1,5 @@
 const TCPSocket = require('./libs/tcpSocket');
 
-tcpServer = new TCPSocket('server');
+tcpServer = new TCPSocket();
 
 tcpServer.listen();

@@ -6,25 +6,23 @@ const { getRandomId } = require('./utils.js');
 const backendServer = new backend("127.0.0.1", 8081);
 
 class TCPSocket {
-    constructor(mode) {
+    constructor() {
         backendServer.setCallback(() => {
             this.isBackendConnected = true;
         })
 
         this.backendConnection = backendServer.getConnection();
         this.isBackendConnected = false;
-
         this.backendConnection.on("data", (rawData) => this.handleRawData(rawData, this, null, true));
-
         this.connections = {};
-        if (mode === 'server') {
-            this.server = net.createServer();
-            this.server.on('connection', (connection) => {
-                const randomUUID = getRandomId();
-                this.connections[randomUUID] = connection;
-                this.receivedConnection(this, randomUUID)
-            });
-        }
+        
+        this.server = net.createServer();
+        this.server.on('connection', (connection) => {
+            const randomUUID = getRandomId();
+            this.connections[randomUUID] = connection;
+            this.receivedConnection(this, randomUUID)
+        });
+        
 
         this.error = null;
         this.httpVersion = null;
@@ -74,15 +72,10 @@ class TCPSocket {
                 var stream = thisObj.handleHTTPRequest(reqLine, headers, data, thisObj, randomUUID);
             }
             
-            // if (stream) return thisObj.handleRawData(connection, stream, thisObj); // if more than one request then parse the next one
         } catch (error) {
             console.log(error);
             return; // request is malformed or just no request at all 
         }
-        
-
-        // console.log('connection data from %s: %j', remoteAddress, rawData.toString());  
-        // connection.write(rawData);  
     }
 
     handleHTTPRequest(reqLine, headers, stream, thisObj, randomUUID) {
