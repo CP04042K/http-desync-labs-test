@@ -13,9 +13,9 @@ class TCPSocket {
         this.httpVersion = null;
 
         const handleLoop = setInterval(() => {
-            console.log(this.requestPool.pool);
+            // console.log(this.requestPool.pool);
             if (!this.requestPool.isPoolEmpty()) this.handleRawData();
-        }, 1000);
+        }, 2000);
     }
 
     listen(port = 9000) {
@@ -49,7 +49,7 @@ class TCPSocket {
     }
 
     handleHTTPRequest(reqLine, headers) {
-        if (/^(GET|POST)\x20\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
+        if (/^(GET|POST|GPOST)\x20\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20HTTP\/1\.(1|0)$/i.test(reqLine)) {
 
             const httpMethod = reqLine.match(/^(\w+)/i)[0];
             const resource = reqLine.match(/\/([a-z0-9A-Z\?\=\#\/ ]+)?\x20/i)[0]; // filter here
@@ -58,6 +58,7 @@ class TCPSocket {
             if (this.httpVersion !== "1.1") {
                 this.error = "We only support http 1.1";
             }
+
 
             if (httpMethod.toUpperCase() === "POST") {
                 if ("Transfer-Encoding" in headers && headers["Transfer-Encoding"].trim() === "chunked") {
@@ -112,6 +113,62 @@ class TCPSocket {
                         "Can't parse request"
                     );
                 }
+            } else if (httpMethod.toUpperCase() === "GPOST") {
+                if (headers["Cookie"]) {
+                    const cookies = {};
+                    headers["Cookie"].split(";").map((cookie) => {
+                        const [key, value] = cookie.split("=");
+                        cookies[key] = value;
+                    });
+
+                    if (cookies["access_key"] && cookies["access_key"] === "GIVEMETHEKEY") {
+                        return this.giveRespond( 
+                            {
+                                httpCode: 200,
+                                httpVersion: this.httpVersion
+                            }, 
+                            {
+                                "X-Requested-UUID": headers["X-Requested-UUID"],
+                                "X-Flag": "DESYNC{This_is_the_flag}"
+                            }, 
+        
+                            `
+                            Your method was: ${httpMethod}\r\n
+                            Your requested resource was: ${resource}
+                            `
+                        ); 
+                    }
+
+                    return this.giveRespond( 
+                        {
+                            httpCode: 200,
+                            httpVersion: this.httpVersion
+                        }, 
+                        {
+                            "X-Requested-UUID": headers["X-Requested-UUID"],
+                        }, 
+    
+                        `
+                        Your method was: ${httpMethod}\r\n
+                        Your requested resource was: ${resource}
+                        `
+                    ); 
+                }
+
+                return this.giveRespond( 
+                    {
+                        httpCode: 200,
+                        httpVersion: this.httpVersion
+                    }, 
+                    {
+                        "X-Requested-UUID": headers["X-Requested-UUID"],
+                    }, 
+
+                    `
+                    Your method was: ${httpMethod}\r\n
+                    Your requested resource was: ${resource}
+                    `
+                ); 
             } else {
                 return this.giveRespond( 
                     {
@@ -147,7 +204,9 @@ class TCPSocket {
                     httpCode: 200,
                     httpVersion: this.httpVersion
                 }, 
-                {}, 
+                {
+                    "X-Requested-UUID": headers["X-Requested-UUID"]
+                }, 
                 "Error parsing HTTP request\r\n"
             );
         }
@@ -191,7 +250,6 @@ class TCPSocket {
         finalResponse += `Content-Length: ${responseBody.length}\r\n\r\n`;
 
         finalResponse += responseBody;
-        console.log(finalResponse); 
         this.connection.write(finalResponse);
 
     }
