@@ -62,6 +62,7 @@ class TCPSocket {
                 headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
 
                 this.connections[headers["X-Requested-UUID"]].write(originalData);
+                this.connections[headers["X-Requested-UUID"]] = null;
             } else {
                 var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
                 var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");

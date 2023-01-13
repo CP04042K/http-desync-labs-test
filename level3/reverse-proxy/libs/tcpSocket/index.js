@@ -63,7 +63,6 @@ class TCPSocket {
                 headers = thisObj.headersToHeaderObj(headers.trim().split("\r\n"));
 
                 this.connections[headers["X-Requested-UUID"]].write(originalData);
-                this.connections[headers["X-Requested-UUID"]] = null;
             } else {
                 var {result: reqLine, left: data} = thisObj.readUntil(data, "\r\n");
                 var {result: headers, left: data} = thisObj.readUntil(data, "\r\n\r\n");
@@ -90,8 +89,19 @@ class TCPSocket {
                 thisObj.error = "We only support http 1.1";
             }
 
-            if (headers["Content-Length"]) 
-                var {result: body, left: stream} = thisObj.readBytes(stream, headers["Content-Length"]);
+            if (httpMethod.toUpperCase() === "POST") {
+                if ("Transfer-Encoding" in headers && headers["Transfer-Encoding"].trim() === "chunked") {
+                    var body = this.parseChunkedRequest(stream);
+                } else if (headers["Content-Length"]) {
+                    var {result: body, left: stream} = thisObj.readBytes(stream, headers["Content-Length"]);
+                } else {
+                    var body = "Can't parse request without Content-Length or Transfer-Encoding";
+                }
+            } else {
+                var body = "";
+            }
+
+            
 
             // do some filter in query string and body, then forward the request to backend-server
 
@@ -118,6 +128,12 @@ class TCPSocket {
         });
         return headerObj;
     } 
+
+    parseChunkedRequest(chunkedData) {
+        const chunkedArr = chunkedData.split("\r\n");
+        // do something here
+        return chunkedArr.join("\r\n");
+    }
 
     giveRespond(options = {}, headers = {}, body = "", randomUUID) {
         // init 3 parts of response
